@@ -39,9 +39,13 @@ def main():
         print("No relevant documents found.")
         return
 
+<<<<<<< HEAD
     context_text = "\n\n---\n\n".join([doc.page_content for doc in results])
 
     prompt = PROMPT_TEMPLATE.format(
         context=context_text,
         question=query_text
     )
+=======
+
+>>>>>>> 323468390e460166896ced4790baa5f1e2292383
