@@ -16,7 +16,6 @@ Question:
 Answer:
 """
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("query_text", type=str)
@@ -40,25 +39,9 @@ def main():
         print("No relevant documents found.")
         return
 
-    context_text = "\n\n".join(doc.page_content for doc in results)[:1200]
+    context_text = "\n\n---\n\n".join([doc.page_content for doc in results])
 
     prompt = PROMPT_TEMPLATE.format(
         context=context_text,
         question=query_text
     )
-
-    # ✅ THIS MODEL + TASK ALWAYS WORK
-    generator = pipeline(
-        "text-generation",
-        model="distilgpt2",
-        max_new_tokens=120
-    )
-
-    response = generator(prompt)[0]["generated_text"]
-
-    print("\n=== ANSWER ===\n")
-    print(response.split("Answer:")[-1].strip())
-
-
-if __name__ == "__main__":
-    main()
