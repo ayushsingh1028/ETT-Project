@@ -50,6 +50,8 @@ def main():
         print(src)
 
     # Format prompt (for LLM step later)
+    context_text = "\n\n---\n\n".join([doc.page_content for doc in results])
+
     prompt = PROMPT_TEMPLATE.format(
         context=context_text,
         question=query_text
@@ -61,3 +63,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
