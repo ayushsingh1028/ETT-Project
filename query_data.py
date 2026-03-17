@@ -1,6 +1,4 @@
 import argparse
-from transformers import pipeline
-
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
@@ -22,15 +20,18 @@ def main():
     args = parser.parse_args()
     query_text = args.query_text
 
+    # Same embeddings used during indexing
     embedding_function = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
+    # Load vector database
     db = Chroma(
         persist_directory=CHROMA_PATH,
         embedding_function=embedding_function
     )
 
+    # Retrieve relevant documents
     results = db.similarity_search(query_text, k=6)
 
     if not results:
@@ -39,49 +40,16 @@ def main():
 
     context_text = "\n\n---\n\n".join([doc.page_content for doc in results])
 
-    prompt = PROMPT_TEMPLATE.format(
-        context=context_text,
-        question=query_text
-    )
-import argparse
-from transformers import pipeline
+    sources = [doc.metadata.get("source", "Unknown") for doc in results]
 
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+    print("\nRetrieved Context:\n")
+    print(context_text[:1000])  # print limited context
 
-CHROMA_PATH = "chroma"
+    print("\nSources:")
+    for src in sources:
+        print(src)
 
-PROMPT_TEMPLATE = """
-Context:
-{context}
-
-Question:
-{question}
-
-Answer:
-"""
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("query_text", type=str)
-    args = parser.parse_args()
-    query_text = args.query_text
-
-    embedding_function = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
-
-    db = Chroma(
-        persist_directory=CHROMA_PATH,
-        embedding_function=embedding_function
-    )
-
-    results = db.similarity_search(query_text, k=6)
-
-    if not results:
-        print("No relevant documents found.")
-        return
-
+    # Format prompt (for LLM step later)
     context_text = "\n\n---\n\n".join([doc.page_content for doc in results])
 
     prompt = PROMPT_TEMPLATE.format(
@@ -89,17 +57,10 @@ def main():
         question=query_text
     )
 
-    generator = pipeline(
-        "text-generation",
-        model="distilgpt2",
-        max_new_tokens=120
-    )
-
-    response = generator(prompt)[0]["generated_text"]
-
-    print("\n=== ANSWER ===\n")
-    print(response.split("Answer:")[-1].strip())
+    print("\nGenerated Prompt:\n")
+    print(prompt)
 
 
 if __name__ == "__main__":
     main()
+
