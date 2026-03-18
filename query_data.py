@@ -32,11 +32,20 @@ def main():
     embedding_function = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
     db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_function)
 
-   
+    # Search the DB.
+    results = db.similarity_search_with_relevance_scores(query_text, k=5)
+    
+    if len(results) == 0:
+        print(f"Unable to find matching results.")
+        return
+
+    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
     prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
     prompt = prompt_template.format(context=context_text, question=query_text)
 
-    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite")
+    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
+
+
 
 
     response_text = model.invoke(prompt)
