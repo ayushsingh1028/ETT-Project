@@ -43,9 +43,7 @@ def main():
     prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
     prompt = prompt_template.format(context=context_text, question=query_text)
 
-    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
-
-
+    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite")
 
 
     response_text = model.invoke(prompt)
@@ -57,4 +55,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
