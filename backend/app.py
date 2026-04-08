@@ -1,4 +1,4 @@
-import os
+import os # Reloading...
 import shutil
 import uuid
 import tempfile
@@ -6,7 +6,7 @@ import sqlite3
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,12 +36,21 @@ DB_PATH      = str(BASE_DIR / "chat_history.db")
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS chat_history
+    # Sessions table: stores individual chat threads
+    c.execute('''CREATE TABLE IF NOT EXISTS sessions
+                 (id TEXT PRIMARY KEY,
+                  title TEXT,
+                  created_at DATETIME)''')
+    
+    # Messages table: linked to a session
+    c.execute('''CREATE TABLE IF NOT EXISTS messages
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  question TEXT,
-                  answer TEXT,
+                  session_id TEXT,
+                  role TEXT,
+                  content TEXT,
                   sources TEXT,
-                  timestamp DATETIME)''')
+                  timestamp DATETIME,
+                  FOREIGN KEY(session_id) REFERENCES sessions(id))''')
     conn.commit()
     conn.close()
 
@@ -73,18 +82,20 @@ app.add_middleware(
 if FRONTEND_DIR.exists():
     app.mount("/app", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
-# ── shared embedding function (loaded once) ──────────────────────────────────
-print("⏳  Loading embedding model …")
+# ── shared embedding function & DB (loaded once) ─────────────────────────────
+print("⏳  Loading embedding model & database …")
 embedding_function = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-mpnet-base-v2"
 )
-print("✅  Embedding model ready.")
 
+# Open Chroma once
+_vector_db: Optional[Chroma] = None
 
-# ── helpers ──────────────────────────────────────────────────────────────────
 def get_db() -> Chroma:
-    return Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_function)
-
+    global _vector_db
+    if _vector_db is None:
+        _vector_db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_function)
+    return _vector_db
 
 def db_exists() -> bool:
     return os.path.exists(CHROMA_PATH) and any(
@@ -93,18 +104,27 @@ def db_exists() -> bool:
         for f in files
     )
 
+# Pre-load DB if it exists
+if db_exists():
+    get_db()
+    print("✅  Database & Embedding model ready (2026 Edition).")
+else:
+    print("⚠️   Database folder empty. Rebuild required.")
+
+
 
 # ── pydantic models ───────────────────────────────────────────────────────────
 class QueryRequest(BaseModel):
     question: str
+    session_id: str  # Critical for session-based chat
     k: int = 5
 
 
 class QueryResponse(BaseModel):
     answer: str
-    sources: list[str]
-    context_chunks: list[str]
-    relevance_scores: list[float]
+    sources: List[str]
+    context_chunks: List[str]
+    relevance_scores: List[float]
 
 
 class StatusResponse(BaseModel):
@@ -115,10 +135,16 @@ class StatusResponse(BaseModel):
 
 class HistoryItem(BaseModel):
     id: int
-    question: str
-    answer: str
-    sources: List[str]
+    session_id: str
+    role: str
+    content: str
+    sources: Optional[List[str]] = None
     timestamp: str
+
+class ChatSession(BaseModel):
+    id: str
+    title: str
+    created_at: str
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
@@ -149,89 +175,158 @@ def status():
         return StatusResponse(db_ready=False, chunk_count=0, data_files=data_files)
 
 
-@app.post("/query", response_model=QueryResponse, tags=["rag"])
+@app.post("/query", response_model=QueryResponse, tags=["chat"])
 def query(req: QueryRequest):
-    """Run a RAG query against the Chroma vector store."""
-    if not db_exists():
-        raise HTTPException(
-            status_code=503,
-            detail="Database not initialised. Upload documents and call /rebuild first."
+    """Query the RAG system and store the interaction with deep logging."""
+    print(f"\n[QUERY] Session: {req.session_id} | Question: {req.question}")
+    
+    try:
+        # STEP 1: Search
+        print("DEBUG: 1. Searching Chroma DB...")
+        db = get_db()
+        results = db.similarity_search_with_relevance_scores(req.question, k=req.k)
+        print(f"DEBUG: 1. Found {len(results)} results.")
+        
+        if len(results) == 0:
+            return QueryResponse(answer="No relevant context found.", sources=[], context_chunks=[], relevance_scores=[])
+
+        chunks = [doc.page_content for doc, _ in results]
+        scores = [float(score) for _, score in results]
+        sources = [doc.metadata.get("source", "Unknown") for doc, _ in results]
+
+        # STEP 2: Prompt
+        print("DEBUG: 2. Preparing Prompt...")
+        context_text = "\n\n---\n\n".join(chunks)
+        prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+        final_prompt = prompt.format(context=context_text, question=req.question)
+
+        # STEP 3: Model call using Direct REST API (Targeting Gemini 2.5 Flash)
+        print(f"DEBUG: 3. Calling AI Model (Direct REST v1 - Gemini 2.5 Flash)...")
+        try:
+            import requests
+            api_key = os.getenv("GOOGLE_API_KEY")
+            # Using the exact name found in models_list.json: gemini-2.5-flash
+            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={api_key}"
+            
+            payload = {
+                "contents": [{
+                    "parts": [{"text": final_prompt}]
+                }]
+            }
+            headers = {'Content-Type': 'application/json'}
+            
+            response = requests.post(url, json=payload, headers=headers)
+            res_json = response.json()
+            
+            if response.status_code == 200:
+                answer = res_json['candidates'][0]['content']['parts'][0]['text']
+                print(f"      ✅ Direct REST Success with gemini-2.5-flash")
+            else:
+                raise Exception(f"API Error {response.status_code}: {res_json.get('error', {}).get('message', 'Unknown error')}")
+                    
+        except Exception as rest_err:
+            print(f"      ❌ Direct REST Failed: {rest_err}")
+            return QueryResponse(answer=f"AI Error (Direct REST failed): {rest_err}", sources=sources, context_chunks=chunks, relevance_scores=scores)
+
+
+
+
+
+        # STEP 4: DB Write
+        print("DEBUG: 4. Saving interaction to SQLite...")
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                      (req.session_id, "user", req.question, datetime.now().isoformat()))
+            c.execute("INSERT INTO messages (session_id, role, content, sources, timestamp) VALUES (?, ?, ?, ?, ?)",
+                      (req.session_id, "ai", answer, json.dumps(sources), datetime.now().isoformat()))
+            
+            # Title update
+            c.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (req.session_id,))
+            if c.fetchone()[0] <= 2:
+                title = req.question[:30] + "..." if len(req.question) > 30 else req.question
+                c.execute("UPDATE sessions SET title = ? WHERE id = ?", (title, req.session_id))
+            conn.commit()
+            conn.close()
+        except Exception as db_err:
+            print(f"ERROR: Database write failed: {db_err}")
+            # we still return the answer even if DB fails
+            
+        return QueryResponse(
+            answer=answer,
+            sources=sources,
+            context_chunks=chunks,
+            relevance_scores=scores,
         )
 
-    db = get_db()
-    results = db.similarity_search_with_relevance_scores(req.question, k=req.k)
-
-    if not results:
-        raise HTTPException(status_code=404, detail="No matching results found.")
-
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _ in results])
-    prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-    prompt = prompt_template.format(context=context_text, question=req.question)
-
-    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
-    response = model.invoke(prompt)
-
-    sources  = [doc.metadata.get("source", "unknown") for doc, _ in results]
-    scores   = [round(float(score), 4) for _, score in results]
-    chunks   = [doc.page_content for doc, _ in results]
-
-    answer = response.content
-    sources_list = sources
-    
-    # Save to SQLite
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("INSERT INTO chat_history (question, answer, sources, timestamp) VALUES (?, ?, ?, ?)",
-                  (req.question, answer, json.dumps(sources_list), datetime.now().isoformat()))
-        conn.commit()
-        conn.close()
     except Exception as e:
-        print(f"Error saving to history: {e}")
-
-    return QueryResponse(
-        answer=answer,
-        sources=sources_list,
-        context_chunks=chunks,
-        relevance_scores=scores,
-    )
-
-
-@app.get("/history", response_model=List[HistoryItem], tags=["chat"])
-def get_history():
-    """Fetch all conversation history from SQLite."""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT * FROM chat_history ORDER BY timestamp ASC")
-        rows = c.fetchall()
-        conn.close()
-        
-        history = []
-        for row in rows:
-            history.append(HistoryItem(
-                id=row['id'],
-                question=row['question'],
-                answer=row['answer'],
-                sources=json.loads(row['sources']),
-                timestamp=row['timestamp']
-            ))
-        return history
-    except Exception as e:
+        print(f"CRITICAL ERROR in /query: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sessions", response_model=List[ChatSession], tags=["chat"])
+def get_sessions():
+    """List all chat sessions."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM sessions ORDER BY created_at DESC")
+    rows = c.fetchall()
+    conn.close()
+    return [ChatSession(id=r['id'], title=r['title'], created_at=r['created_at']) for r in rows]
+
+
+@app.post("/sessions", response_model=ChatSession, tags=["chat"])
+def create_session():
+    """Create a new chat session."""
+    s_id = str(uuid.uuid4())[:8]
+    now = datetime.now().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO sessions (id, title, created_at) VALUES (?, ?, ?)",
+              (s_id, "New Chat", now))
+    conn.commit()
+    conn.close()
+    return ChatSession(id=s_id, title="New Chat", created_at=now)
+
+
+@app.get("/sessions/{session_id}/messages", response_model=List[HistoryItem], tags=["chat"])
+def get_session_messages(session_id: str):
+    """Fetch all messages for a specific session."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC", (session_id,))
+    rows = c.fetchall()
+    conn.close()
+    
+    msgs = []
+    for r in rows:
+        msgs.append(HistoryItem(
+            id=r['id'],
+            session_id=r['session_id'],
+            role=r['role'],
+            content=r['content'],
+            sources=json.loads(r['sources']) if r['sources'] else None,
+            timestamp=r['timestamp']
+        ))
+    return msgs
 
 
 @app.delete("/history", tags=["chat"])
 def clear_history():
-    """Wipe all conversation history."""
+    """Wipe all sessions and messages."""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("DELETE FROM chat_history")
+        c.execute("DELETE FROM messages")
+        c.execute("DELETE FROM sessions")
         conn.commit()
         conn.close()
-        return {"message": "Chat history cleared."}
+        return {"message": "All history cleared."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -279,6 +374,9 @@ def rebuild_database():
     db = Chroma.from_documents(chunks, embedding_function, persist_directory=CHROMA_PATH)
     db.persist()
 
+    global _vector_db
+    _vector_db = db
+
     return {
         "message": "Database rebuilt successfully.",
         "files_indexed": len(md_files),
@@ -291,5 +389,7 @@ def delete_database():
     """Wipe the Chroma vector store."""
     if os.path.exists(CHROMA_PATH):
         shutil.rmtree(CHROMA_PATH)
+        global _vector_db
+        _vector_db = None
         return {"message": "Database deleted successfully."}
     return {"message": "No database found to delete."}
