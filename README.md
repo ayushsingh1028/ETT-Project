@@ -21,7 +21,7 @@ KnowledgeAI is a state-of-the-art Retrieval-Augmented Generation (RAG) applicati
 - **AI Model**: Google Gemini 2.5 Flash (via Direct REST Integration)
 - **Vector Store**: ChromaDB
 - **Database**: SQLite (Chat History)
-- **Frontend**: Vanilla JavaScript, Semantic HTML5, Custom CSS3
+- **Frontend**: Html , css, Javascript
 - **Styling**: Google Fonts (Inter), Material Icons
 
 ## 📂 Project Structure
@@ -73,4 +73,3 @@ KnowledgeAI is a state-of-the-art Retrieval-Augmented Generation (RAG) applicati
    Open your browser at `http://localhost:8000/app/`.
 
 ---
-*Created by Antigravity AI - Designed for Knowledge Seekers.*
