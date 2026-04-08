@@ -178,8 +178,9 @@
       align-items: center;
       justify-content: flex-end;
       gap: 8px;
-      padding: 16px 32px;
+      padding: 12px 32px;
       background: var(--surface-low);
+      border-bottom: 1px solid rgba(70, 69, 85, 0.2);
     }
     .topbar-btn {
       width: 38px; height: 38px;
@@ -203,13 +204,21 @@
     }
 
     /* ── Page Container ── */
-    .page { display: none; flex: 1; overflow-y: auto; padding: 40px 48px 120px; }
+    .page { display: none; flex: 1; overflow-y: auto; padding: 20px 48px 40px; scroll-behavior: smooth; }
     .page.active { display: block; animation: fade-in 0.3s ease; }
+
+    /* Special handling for Query Page to prevent overlap */
+    #page-query.active {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden; /* The page itself doesn't scroll */
+      padding-bottom: 0;
+    }
 
     @keyframes fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
     /* ═══════════════════════ QUERY PAGE ═══════════════════════ */
-    .page-header { margin-bottom: 40px; }
+    .page-header { margin-bottom: 40px; flex-shrink: 0; }
     .page-title {
       font-size: 2.4rem;
       font-weight: 800;
@@ -220,14 +229,21 @@
     .page-title span { background: var(--cta-grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
     .page-sub { font-size: 1rem; color: var(--on-surface-var); margin-top: 8px; line-height: 1.6; max-width: 580px; }
 
-    /* Query input area */
+    /* Results area - now the scrollable part */
+    .results-area { 
+      flex: 1;
+      overflow-y: auto;
+      margin-bottom: 0;
+      padding-right: 8px; /* Space for scrollbar */
+    }
+
+    /* Query input area - fixed at bottom, no transparency */
     .query-input-section {
-      position: sticky;
-      bottom: 0;
-      background: linear-gradient(to top, var(--surface-lowest) 70%, transparent);
-      padding: 24px 0 0;
+      background: var(--surface-lowest);
+      border-top: 1px solid rgba(70, 69, 85, 0.3);
       margin: 0 -48px;
-      padding: 24px 48px 0;
+      padding: 24px 48px 32px;
+      z-index: 10;
     }
     .example-chips {
       display: flex;
@@ -670,12 +686,12 @@
 
     <!-- ─── QUERY PAGE ─── -->
     <div class="page active" id="page-query">
-      <div class="page-header">
-        <h1 class="page-title">Knowledge <span>Query</span></h1>
-        <p class="page-sub">Retrieve profound insights from your connected knowledge bases. The ethereal archivist synthesizes your documents into singular, enlightened answers.</p>
-      </div>
-
       <div class="results-area" id="results-area">
+        <div class="page-header">
+          <h1 class="page-title">Knowledge <span>Query</span></h1>
+          <p class="page-sub">Retrieve profound insights from your connected knowledge bases.</p>
+        </div>
+
         <div class="empty-state" id="empty-state">
           <span class="material-icons-round">auto_awesome</span>
           <h3>Ask anything</h3>
