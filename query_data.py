@@ -43,9 +43,7 @@ def main():
     prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
     prompt = prompt_template.format(context=context_text, question=query_text)
 
-    model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite")
-
-
+    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
     response_text = model.invoke(prompt)
 
     sources = [doc.metadata.get("source", None) for doc, _score in results]
