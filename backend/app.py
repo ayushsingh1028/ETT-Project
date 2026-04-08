@@ -2,8 +2,11 @@ import os
 import shutil
 import uuid
 import tempfile
+import sqlite3
+import json
 from pathlib import Path
-from typing import Optional
+from datetime import datetime
+from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +30,22 @@ BASE_DIR     = Path(__file__).parent.parent          # langchain-rag-tutorial-ma
 CHROMA_PATH  = str(BASE_DIR / "chroma")
 DATA_PATH    = str(BASE_DIR / "data" / "books")
 FRONTEND_DIR = BASE_DIR / "frontend"
+DB_PATH      = str(BASE_DIR / "chat_history.db")
+
+# ── database setup ───────────────────────────────────────────────────────────
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS chat_history
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  question TEXT,
+                  answer TEXT,
+                  sources TEXT,
+                  timestamp DATETIME)''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # ── prompt ───────────────────────────────────────────────────────────────────
 PROMPT_TEMPLATE = """
@@ -94,6 +113,14 @@ class StatusResponse(BaseModel):
     data_files: list[str]
 
 
+class HistoryItem(BaseModel):
+    id: int
+    question: str
+    answer: str
+    sources: List[str]
+    timestamp: str
+
+
 # ── routes ────────────────────────────────────────────────────────────────────
 @app.get("/", tags=["health"])
 def root():
@@ -148,12 +175,65 @@ def query(req: QueryRequest):
     scores   = [round(float(score), 4) for _, score in results]
     chunks   = [doc.page_content for doc, _ in results]
 
+    answer = response.content
+    sources_list = sources
+    
+    # Save to SQLite
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO chat_history (question, answer, sources, timestamp) VALUES (?, ?, ?, ?)",
+                  (req.question, answer, json.dumps(sources_list), datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error saving to history: {e}")
+
     return QueryResponse(
-        answer=response.content,
-        sources=sources,
+        answer=answer,
+        sources=sources_list,
         context_chunks=chunks,
         relevance_scores=scores,
     )
+
+
+@app.get("/history", response_model=List[HistoryItem], tags=["chat"])
+def get_history():
+    """Fetch all conversation history from SQLite."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT * FROM chat_history ORDER BY timestamp ASC")
+        rows = c.fetchall()
+        conn.close()
+        
+        history = []
+        for row in rows:
+            history.append(HistoryItem(
+                id=row['id'],
+                question=row['question'],
+                answer=row['answer'],
+                sources=json.loads(row['sources']),
+                timestamp=row['timestamp']
+            ))
+        return history
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/history", tags=["chat"])
+def clear_history():
+    """Wipe all conversation history."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM chat_history")
+        conn.commit()
+        conn.close()
+        return {"message": "Chat history cleared."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/upload", tags=["database"])

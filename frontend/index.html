@@ -666,6 +666,9 @@
     </nav>
 
     <div class="sidebar-footer">
+      <div class="nav-item" onclick="clearHistory()" style="margin-bottom: 12px; color: var(--error);">
+        <span class="material-icons-round">delete_sweep</span>Clear History
+      </div>
       <div class="db-status">
         <div class="db-dot loading" id="db-dot"></div>
         <div class="db-info">
@@ -944,13 +947,17 @@
       btn.disabled = false;
     }
 
-    function renderAnswer(question, data, area) {
-      const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    function renderAnswer(question, data, area, timestamp = null) {
+      const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const uniqueSources = [...new Set(data.sources)];
-      const scoreHtml = data.relevance_scores.map((s, i) => {
-        const cls = s >= 0.7 ? 'high' : s >= 0.4 ? 'mid' : 'low';
-        return `<span class="score-badge ${cls}">Chunk ${i+1}: ${(s*100).toFixed(0)}%</span>`;
-      }).join('');
+      
+      let scoreHtml = '';
+      if (data.relevance_scores && Array.isArray(data.relevance_scores)) {
+        scoreHtml = data.relevance_scores.map((s, i) => {
+          const cls = s >= 0.7 ? 'high' : s >= 0.4 ? 'mid' : 'low';
+          return `<span class="score-badge ${cls}">Chunk ${i+1}: ${(s*100).toFixed(0)}%</span>`;
+        }).join('');
+      }
 
       const srcHtml = uniqueSources.map(s =>
         `<div class="source-pill"><span class="material-icons-round">description</span>${s}</div>`
@@ -963,16 +970,13 @@
         <div class="answer-card-header">
           <div class="ai-icon"><span class="material-icons-round">auto_awesome</span></div>
           <span class="answer-label">AI Response</span>
-          <span class="answer-time">${now}</span>
+          <span class="answer-time">${time}</span>
         </div>
         <div class="answer-body">
           <div class="question-text">"${question}"</div>
           <div class="answer-text">${escHtml(data.answer)}</div>
         </div>
-        <div class="score-bar">
-          <span class="score-label">Relevance:</span>
-          <div class="score-items">${scoreHtml}</div>
-        </div>
+        ${scoreHtml ? `<div class="score-bar"><span class="score-label">Relevance:</span><div class="score-items">${scoreHtml}</div></div>` : ''}
         <div class="sources-section">
           <div class="sources-label">Sources &amp; References</div>
           <div class="source-pills">${srcHtml}</div>
@@ -1119,9 +1123,47 @@
     }
 
     /* ═══════════════════════════════════════════════ */
-    /*  Init                                           */
+    /*  History & Init                                 */
     /* ═══════════════════════════════════════════════ */
-    checkStatus();
+    async function loadHistory() {
+      try {
+        const res = await fetch(`${API}/history`);
+        const history = await res.json();
+        if (history && history.length > 0) {
+          const area = document.getElementById('results-area');
+          const empty = document.getElementById('empty-state');
+          if (empty) empty.style.display = 'none';
+          
+          history.forEach(item => {
+            renderAnswer(item.question, item, area, item.timestamp);
+          });
+          const scrollArea = area.parentElement;
+          if (scrollArea) scrollArea.scrollTop = scrollArea.scrollHeight;
+        }
+      } catch (e) {
+        console.error("Failed to load history:", e);
+      }
+    }
+
+    async function clearHistory() {
+      if (!confirm("Are you sure you want to clear all chat history?")) return;
+      try {
+        const res = await fetch(`${API}/history`, { method: 'DELETE' });
+        if (res.ok) {
+          location.reload(); // Simplest way to reset UI
+        }
+      } catch (e) {
+        showToast("Failed to clear history", "error");
+      }
+    }
+
+    // Wrap initial calls
+    async function init() {
+      await checkStatus();
+      await loadHistory();
+    }
+
+    init();
     setInterval(checkStatus, 30000);
   </script>
 </body>
